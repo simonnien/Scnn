@@ -8,3 +8,5 @@ if torch.cuda.is_available():
     print(f"當前 CUDA 版本: {torch.version.cuda}")
 else:
     print("❌ 抓不到顯卡，目前只能使用 CPU。")
+
+input("\n按 Enter 鍵退出程式...")
