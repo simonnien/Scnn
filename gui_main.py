@@ -13,33 +13,11 @@ from torchvision import datasets, transforms
 import snn_config as cfg
 import snn_model
 
-# === [新增] 預設參數設定檔 ===
-PRESETS = {
-    "MNIST": {
-        "arch": "6C5-PL-16C5-PL-FC120-FC84-FC10",
-        "epochs": 3,
-        "timesteps": 20,
-        "beta": 0.95,
-        "lr": 0.001,
-        "threshold": 1.0,
-        "batch": 128
-    },
-    "CIFAR10": {
-        "arch": "16C3-64C3-PL-128C3-128C3-PL-128C3-PL-FC512-FC10",
-        "epochs": 10,
-        "timesteps": 30, # CIFAR 需要較長時間步長
-        "beta": 0.90,    # 稍微降低 Beta 加快反應
-        "lr": 0.001,
-        "threshold": 1.0,
-        "batch": 64      # CIFAR 模型較大，稍微降低 Batch 防止顯存不足
-    }
-}
-
 class SNN_GUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("SCNN 通用圖像辨識平台 (Auto-Config)")
-        self.root.geometry("1000x750")
+        self.root.title("SCNN 通用圖像辨識平台 (Advanced Config)")
+        self.root.geometry("1000x800") # 稍微拉高以容納新按鈕
 
         self.model = None
         self.device = cfg.DEVICE
@@ -47,12 +25,15 @@ class SNN_GUI:
         self.is_training = False
         self.imported_image = None
         
+        # 手動權重相關變數
+        self.var_use_custom_weight = tk.BooleanVar(value=False)
+        self.custom_weight_path = ""
+        
         self.canvas_size = 200
         self.draw_image = Image.new("L", (self.canvas_size, self.canvas_size), "black")
         self.draw = ImageDraw.Draw(self.draw_image)
         
         self.setup_ui()
-        # 初始化時先執行一次預設載入
         self.on_dataset_change(None, init=True)
 
     def setup_ui(self):
@@ -65,18 +46,34 @@ class SNN_GUI:
         dataset_frame.pack(fill=tk.X, pady=5)
         ttk.Label(dataset_frame, text="資料庫 (Dataset):").pack(anchor=tk.W)
         
-        self.combo_dataset = ttk.Combobox(dataset_frame, values=["MNIST", "CIFAR10"], width=28, state="readonly")
+        dataset_options = list(cfg.PRESETS.keys())
+        self.combo_dataset = ttk.Combobox(dataset_frame, values=dataset_options, width=28, state="readonly")
         self.combo_dataset.set("MNIST")
         self.combo_dataset.pack(fill=tk.X)
-        
-        # [關鍵] 綁定選擇事件：當選單改變時，觸發 on_dataset_change
         self.combo_dataset.bind("<<ComboboxSelected>>", self.on_dataset_change)
         
-        # 顯示當前輸入規格
         self.lbl_input_spec = ttk.Label(left_panel, text="Input: ???", foreground="blue")
         self.lbl_input_spec.pack(pady=2)
 
-        # 建立 Entry (注意：這裡不設定 default_val，因為會被 PRESETS 覆蓋)
+        # [新增] 權重檔案選擇區塊
+        weight_frame = ttk.LabelFrame(left_panel, text="權重檔案 (Weights)")
+        weight_frame.pack(fill=tk.X, pady=10)
+        
+        # 勾選框
+        self.chk_custom = ttk.Checkbutton(weight_frame, text="手動選擇權重檔", 
+                                          variable=self.var_use_custom_weight, 
+                                          command=self.toggle_weight_selection)
+        self.chk_custom.pack(anchor=tk.W, padx=5)
+        
+        # 選擇按鈕與顯示標籤
+        self.btn_browse = ttk.Button(weight_frame, text="瀏覽 (Browse)...", 
+                                     command=self.browse_weight_file, state=tk.DISABLED)
+        self.btn_browse.pack(fill=tk.X, padx=5, pady=2)
+        
+        self.lbl_weight_path = ttk.Label(weight_frame, text="(使用自動命名)", foreground="gray", wraplength=200)
+        self.lbl_weight_path.pack(fill=tk.X, padx=5, pady=2)
+
+        # 一般參數輸入框
         def create_entry(label_text, var_name):
             frame = ttk.Frame(left_panel)
             frame.pack(fill=tk.X, pady=5)
@@ -113,6 +110,7 @@ class SNN_GUI:
         self.notebook.add(self.tab_test, text="測試模式 (Test / Correction)")
         self.setup_test_tab()
 
+    # ... (setup_train_tab, setup_test_tab, on_dataset_change, restart_program 保持不變) ...
     def setup_train_tab(self):
         top_frame = ttk.Frame(self.tab_train)
         top_frame.pack(pady=10, fill=tk.X)
@@ -126,14 +124,12 @@ class SNN_GUI:
     def setup_test_tab(self):
         draw_area = ttk.Frame(self.tab_test)
         draw_area.pack(pady=5)
-        
         left_draw = ttk.Frame(draw_area)
         left_draw.pack(side=tk.LEFT, padx=20)
         ttk.Label(left_draw, text="手寫/圖片區").pack()
         self.canvas = tk.Canvas(left_draw, width=self.canvas_size, height=self.canvas_size, bg="black", cursor="cross")
         self.canvas.pack(pady=5)
         self.canvas.bind("<B1-Motion>", self.paint)
-
         right_preview = ttk.Frame(draw_area)
         right_preview.pack(side=tk.LEFT, padx=20)
         self.lbl_preview_title = ttk.Label(right_preview, text="模型視野")
@@ -143,38 +139,31 @@ class SNN_GUI:
         empty_img = Image.new("RGB", (140, 140), "black")
         self.test_image_ref = ImageTk.PhotoImage(empty_img)
         self.lbl_test_preview.config(image=self.test_image_ref)
-
         btn_frame = ttk.Frame(self.tab_test)
         btn_frame.pack(pady=5)
         ttk.Button(btn_frame, text="清除 (Clear)", command=self.clear_canvas).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="匯入圖片 (Import)", command=self.import_image).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="辨識 (Predict)", command=self.predict_digit).pack(side=tk.LEFT, padx=5)
-
         train_single_frame = ttk.LabelFrame(self.tab_test, text="單筆糾錯訓練 (Correction)")
         train_single_frame.pack(pady=5, fill=tk.X, padx=20)
-        ttk.Label(train_single_frame, text="正確類別 (0-9):").pack(side=tk.LEFT, padx=5)
-        self.combobox_label = ttk.Combobox(train_single_frame, values=[str(i) for i in range(10)], width=5)
-        self.combobox_label.current(0)
+        ttk.Label(train_single_frame, text="正確類別:").pack(side=tk.LEFT, padx=5)
+        self.combobox_label = ttk.Combobox(train_single_frame, width=10, state="readonly")
         self.combobox_label.pack(side=tk.LEFT, padx=5)
         ttk.Button(train_single_frame, text="以此圖訓練並存檔", command=self.train_single_sample).pack(side=tk.LEFT, padx=10)
-
         self.lbl_result = ttk.Label(self.tab_test, text="預測結果: ???", font=("Arial", 16, "bold"))
         self.lbl_result.pack(pady=10)
         self.lbl_spikes = ttk.Label(self.tab_test, text="脈衝計數: []", font=("Courier", 10))
         self.lbl_spikes.pack()
 
-    # === 核心邏輯區 ===
-
-    # [新增] 當資料庫切換時，自動填入預設值
     def on_dataset_change(self, event, init=False):
         dataset = self.combo_dataset.get()
-        settings = PRESETS.get(dataset, PRESETS["MNIST"])
-
-        # 輔助函數：清空並填入
+        settings = cfg.PRESETS.get(dataset, cfg.PRESETS["MNIST"])
+        current_labels = cfg.CLASS_LABELS.get(dataset, cfg.CLASS_LABELS["MNIST"])
+        self.combobox_label['values'] = current_labels
+        self.combobox_label.current(0) 
         def set_val(entry, value):
             entry.delete(0, tk.END)
             entry.insert(0, str(value))
-
         set_val(self.entry_arch, settings["arch"])
         set_val(self.entry_epochs, settings["epochs"])
         set_val(self.entry_timesteps, settings["timesteps"])
@@ -182,19 +171,51 @@ class SNN_GUI:
         set_val(self.entry_thresh, settings["threshold"])
         set_val(self.entry_batch, settings["batch"])
         set_val(self.entry_lr, settings["lr"])
-        
-        # 呼叫 apply_config 更新 cfg 變數 (如果是初始化則不彈窗)
-        self.apply_config(initial=True)
+        self.apply_config(initial=init)
 
     def restart_program(self):
         if messagebox.askyesno("確認", "確定要重新啟動程式嗎？"):
             python = sys.executable
             os.execl(python, python, *sys.argv)
 
+    # === [新增] 權重檔案選擇邏輯 ===
+
+    def toggle_weight_selection(self):
+        """切換手動/自動模式"""
+        if self.var_use_custom_weight.get():
+            # 啟用手動模式
+            self.btn_browse.config(state=tk.NORMAL)
+            if self.custom_weight_path:
+                self.lbl_weight_path.config(text=os.path.basename(self.custom_weight_path), foreground="black")
+            else:
+                self.lbl_weight_path.config(text="請選擇檔案...", foreground="red")
+        else:
+            # 停用手動模式 (回歸自動)
+            self.btn_browse.config(state=tk.DISABLED)
+            self.lbl_weight_path.config(text="(使用自動命名)", foreground="gray")
+
+    def browse_weight_file(self):
+        """開啟檔案瀏覽器"""
+        # 預設開啟 ./WEIGHT/ 資料夾
+        initial_dir = cfg.WEIGHT_DIR if os.path.exists(cfg.WEIGHT_DIR) else "."
+        filename = filedialog.askopenfilename(
+            initialdir=initial_dir,
+            title="選擇權重檔案",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        
+        if filename:
+            self.custom_weight_path = filename
+            # 顯示簡短檔名
+            self.lbl_weight_path.config(text=os.path.basename(filename), foreground="black")
+
+    # === [修改] 應用設定 (Apply Config) ===
+    
     def apply_config(self, initial=False):
         try:
             cfg.DATASET_NAME = self.combo_dataset.get()
             
+            # 設定圖片規格
             if cfg.DATASET_NAME == "MNIST":
                 cfg.IMAGE_SIZE = 28
                 cfg.INPUT_CHANNELS = 1
@@ -205,6 +226,7 @@ class SNN_GUI:
             self.lbl_input_spec.config(text=f"Specs: {cfg.IMAGE_SIZE}x{cfg.IMAGE_SIZE}, {cfg.INPUT_CHANNELS} Chs")
             self.lbl_preview_title.config(text=f"模型視野 ({cfg.IMAGE_SIZE}x{cfg.IMAGE_SIZE})")
 
+            # 讀取數值參數
             cfg.MODEL_ARCH = self.entry_arch.get()
             cfg.NUM_EPOCHS = int(self.entry_epochs.get())
             cfg.TIME_STEPS = int(self.entry_timesteps.get())
@@ -213,27 +235,42 @@ class SNN_GUI:
             cfg.BATCH_SIZE = int(self.entry_batch.get())
             cfg.LEARNING_RATE = float(self.entry_lr.get())
             
-            cfg.WEIGHTS_FILE = f"{cfg.DATASET_NAME}_{cfg.MODEL_ARCH}.csv"
+            # [修改] 決定權重檔路徑
+            if self.var_use_custom_weight.get() and self.custom_weight_path:
+                # 使用手動選擇的路徑
+                cfg.WEIGHTS_FILE = self.custom_weight_path
+            else:
+                # 使用自動命名 (包含 ./WEIGHT/ 路徑)
+                filename = f"{cfg.DATASET_NAME}_{cfg.MODEL_ARCH}.csv"
+                cfg.WEIGHTS_FILE = os.path.join(cfg.WEIGHT_DIR, filename)
             
+            # 嘗試載入模型
             self.load_current_model()
             
             if not initial:
-                messagebox.showinfo("成功", f"參數更新！\n資料庫: {cfg.DATASET_NAME}\nInput: {cfg.INPUT_CHANNELS}通道")
+                # 提示訊息增加顯示目前的權重檔名
+                msg = f"參數更新！\n資料庫: {cfg.DATASET_NAME}\n權重檔: {os.path.basename(cfg.WEIGHTS_FILE)}"
+                messagebox.showinfo("成功", msg)
+                
         except ValueError as e:
             if not initial:
                 messagebox.showerror("參數錯誤", f"格式錯誤: {e}")
+
+    # ... (其餘函式 load_current_model, paint, import_image, clear_canvas, 
+    #      _get_input_tensor, predict_digit, train_single_sample, 
+    #      log_message, stop_training, start_training_thread, run_training 
+    #      皆保持不變) ...
 
     def load_current_model(self):
         try:
             self.model = snn_model.DynamicSCNN().to(self.device)
             loaded = snn_model.load_weights_from_csv(self.model, cfg.WEIGHTS_FILE)
             self.model.eval()
-            msg = f"已載入模型: {cfg.WEIGHTS_FILE}" if loaded else "權重檔不存在，使用隨機初始化"
+            msg = f"已載入模型: {os.path.basename(cfg.WEIGHTS_FILE)}" if loaded else "權重檔不存在，使用隨機初始化"
             self.log_message(msg)
         except Exception as e:
             self.log_message(f"模型建構失敗: {e}")
 
-    # === 繪圖與圖片處理 ===
     def paint(self, event):
         if self.imported_image:
             self.imported_image = None
@@ -303,20 +340,23 @@ class SNN_GUI:
             spk_rec = self.model(spike_data)
             spike_counts = spk_rec.sum(dim=0).squeeze()
             pred_idx = spike_counts.argmax().item()
-            self.lbl_result.config(text=f"預測結果: {pred_idx}")
+            current_labels = cfg.CLASS_LABELS.get(cfg.DATASET_NAME, cfg.CLASS_LABELS["MNIST"])
+            label_name = current_labels[pred_idx] if pred_idx < len(current_labels) else str(pred_idx)
+            self.lbl_result.config(text=f"預測: {label_name} ({pred_idx})")
             self.lbl_spikes.config(text=f"計數: {spike_counts.cpu().numpy().astype(int).tolist()}")
 
     def train_single_sample(self):
         if self.model is None: return
-        target_str = self.combobox_label.get()
-        if not target_str.isdigit():
-            messagebox.showerror("錯誤", "請選擇有效的數字 (0-9)")
+        selected_text = self.combobox_label.get()
+        current_labels = cfg.CLASS_LABELS.get(cfg.DATASET_NAME, cfg.CLASS_LABELS["MNIST"])
+        try:
+            target_idx = current_labels.index(selected_text)
+        except ValueError:
+            messagebox.showerror("錯誤", "無法識別選擇的類別")
             return
-        target = torch.tensor([int(target_str)]).to(self.device)
-
+        target = torch.tensor([target_idx]).to(self.device)
         input_tensor = self._get_input_tensor()
         spike_data = spikegen.rate(input_tensor, num_steps=cfg.TIME_STEPS)
-
         try:
             self.model.train()
             optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.LEARNING_RATE)
@@ -329,11 +369,10 @@ class SNN_GUI:
             snn_model.export_weights_to_csv(self.model, cfg.WEIGHTS_FILE)
             self.model.eval()
             self.lbl_result.config(text=f"單筆訓練完成! Loss: {loss.item():.4f}")
-            messagebox.showinfo("成功", f"圖片已學習！\nLabel: {target_str}\nSaved to: {cfg.WEIGHTS_FILE}")
+            messagebox.showinfo("成功", f"圖片已學習！\n目標: {selected_text}\nSaved to: {cfg.WEIGHTS_FILE}")
         except Exception as e:
             messagebox.showerror("訓練錯誤", f"單筆訓練失敗: {e}")
 
-    # === 訓練邏輯 ===
     def log_message(self, msg):
         self.log_text.config(state=tk.NORMAL)
         self.log_text.insert(tk.END, msg + "\n")

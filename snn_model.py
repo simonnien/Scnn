@@ -4,6 +4,7 @@ import snntorch as snn
 import csv
 import numpy as np
 import ast
+import os
 import snn_config as cfg
 
 class DynamicSCNN(nn.Module):
@@ -122,6 +123,12 @@ def load_weights_from_csv(model, filename):
 
 def export_weights_to_csv(model, filename):
     print(f"正在將權重匯出至 {filename} ...")
+    
+    # [新增] 確保目標資料夾存在 (防止手動選擇路徑時選到不存在的資料夾報錯)
+    folder = os.path.dirname(filename)
+    if folder and not os.path.exists(folder):
+        os.makedirs(folder)
+
     state_dict = model.state_dict()
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
