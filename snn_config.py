@@ -16,7 +16,7 @@ INPUT_CHANNELS = 1
 MODEL_ARCH = "6C5-PL-16C5-PL-FC120-FC84-FC10"
 
 # --- [修改] 權重檔案路徑設定 ---
-WEIGHT_DIR = "./WEIGHT"  # 設定權重存放目錄
+WEIGHT_DIR = "."  # 設定權重存放目錄
 # 確保目錄存在
 if not os.path.exists(WEIGHT_DIR):
     os.makedirs(WEIGHT_DIR)
